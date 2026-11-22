@@ -1,0 +1,47 @@
+name: ASKLearn checks
+on: [push, pull_request]
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: asklearn_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: asklearn_test_only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: python -m venv .venv
+      - run: .venv/bin/python -m pip install -r backend/requirements.txt
+      - run: mkdir -p artifacts && .venv/bin/python -m pytest backend/tests -q --basetemp=artifacts/pytest-ci
+        env:
+          TEST_POSTGRES_URL: postgresql+psycopg://postgres:asklearn_test_only@localhost:5432/asklearn_test
+      - run: npm ci && npm run build
+        working-directory: frontend
+      - run: npx playwright install --with-deps chromium
+        working-directory: frontend
+      - run: npm run test:e2e
+        working-directory: frontend
+        env:
+          CI: 'true'
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: browser-failure-evidence
+          path: |
+            frontend/test-results/
+            artifacts/

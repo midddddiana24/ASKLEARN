@@ -1,0 +1,23 @@
+/* Motion supports a task; content and navigation stay available. */
+.task-visual{position:relative;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--accent);flex-shrink:0;gap:8px}
+.task-object{width:180px;height:140px;position:relative;isolation:isolate}
+.task-object canvas,.task-fallback{position:absolute;inset:0;width:100%;height:100%;display:block}
+.task-fallback{z-index:-1}.task-fallback.is-rendered{visibility:hidden}.task-artwork{width:100%;height:100%;display:block}
+.task-label{font-size:12px;color:var(--muted)}.task-visual progress{width:100%;height:6px}
+.task-compact{display:inline-flex;width:25px;height:25px;vertical-align:middle}.task-compact .task-object{width:25px;height:25px}.task-compact .task-paper{display:none}
+.save-status>.task-visual{margin-right:1px}.save-status>.saved-dot,.save-status>.pending-dot{display:none}
+.loading>.task-visual{margin:0 auto 12px}.loading{min-height:240px}.opening-panel{max-width:440px;text-align:center;padding:32px 24px;background:var(--surface);border:1px solid var(--edge);border-radius:5px;box-shadow:5px 5px var(--shadow)}
+.opening-panel>.task-visual{margin:0 auto 14px}.opening-panel .task-object{width:270px;height:190px;max-width:100%}.opening-panel h1{font-size:27px;letter-spacing:-1px}.opening-panel p{font-size:14px;color:var(--muted)}.opening-panel>span{display:block;margin-top:18px}.opening-panel button{min-height:44px;margin-top:8px}
+.upload-zone>.task-visual{order:-1}.upload-zone>.upload-icon{display:none}.upload-zone>.task-visual .task-object{width:132px;height:112px}.upload-zone>div:not(.task-visual):not(.processing-track){min-width:0}
+.profile-welcome{border-top:4px solid var(--success)}.profile-welcome>.window-title{background:var(--accent-light)}.profile-preview .profile-cover{background:repeating-linear-gradient(0deg,transparent 0,transparent 17px,var(--line) 17px,var(--line) 18px),var(--accent-light);border-left:6px solid var(--success)}
+.companion-title{height:46px;padding-right:102px}.companion-controls button{height:44px;width:44px}.companion,.companion.compact{padding-top:54px}.companion-controls{top:0}
+.primary,.secondary,.document-card,.navigation-dock a,.avatar-options button,.suggestions button{transition:transform .18s ease,box-shadow .18s ease,background-color .18s ease}
+.settings-card input,.auth-form input,.history-search input,.composer,.setup-fields select{border-radius:4px}
+.section-heading p,.profile-welcome-copy>p{line-height:1.65}.dashboard-stats span{font-size:12px}.workspace-main .fine{line-height:1.6}
+@media(hover:hover) and (pointer:fine){.document-card:hover{transform:translateY(-3px);box-shadow:5px 7px 0 var(--shadow)}.app-header .navigation-dock a:hover{transform:translateY(-2px)}.avatar-options button:hover{transform:translateY(-2px)}}
+@media(max-width:640px){.upload-zone>.task-visual{width:100%;flex:none}.upload-zone>.task-visual .task-object{width:160px;height:112px}.upload-zone>div:not(.task-visual){flex-basis:100%}.opening-panel{width:calc(100vw - 40px);padding:24px 18px}.opening-panel h1{font-size:24px}.companion-title>span{display:none}.companion,.companion.compact{padding-top:54px}.companion-title{font-size:12px}.companion-copy p{font-size:12px}}
+@media(prefers-reduced-motion:reduce){.task-visual *{animation:none!important;transition:none!important}.primary,.secondary,.document-card,.navigation-dock a,.avatar-options button{transition:none!important;transform:none!important}}
+
+.task-saving .task-bookmark{animation:bookmark-save .9s ease-in-out infinite}.task-saved .task-bookmark{animation:bookmark-settle .25s ease-out}
+@keyframes bookmark-save{0%,100%{transform:translateY(-3px);opacity:.6}50%{transform:translateY(0);opacity:1}}
+@keyframes bookmark-settle{from{transform:translateY(-4px)}to{transform:translateY(0)}}
