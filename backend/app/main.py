@@ -207,7 +207,7 @@ def remove_document(identity: int, user: User = Depends(current_user), db: Sessi
     db.execute(delete(Chunk).where(Chunk.document_id == identity))
     db.delete(doc)
     db.execute(delete(Activity).where(Activity.user_id == user.id, Activity.kind == 'document', Activity.resource_id == identity))
-    clear_workspace(db, user.id)
+    clear_workspace(db, user.id, document_id=identity)
     db.commit()
     return {'ok': True}
 

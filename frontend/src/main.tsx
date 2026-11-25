@@ -12,6 +12,7 @@ import './study-motion.css'
 import './modern.css'
 import './auth-home.css'
 import './cobalt.css'
+import './workspace-files.css'
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode><BrowserRouter><MotionConfig reducedMotion="user"><App/></MotionConfig></BrowserRouter></React.StrictMode>,

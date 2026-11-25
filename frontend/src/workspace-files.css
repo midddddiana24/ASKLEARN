@@ -1,0 +1,21 @@
+/* File actions sit outside the selection label and remain usable on touch screens. */
+.sidebar-document-row { display:flex;align-items:center;gap:4px;min-width:0;border-radius:10px; }
+.sidebar-document-row:hover { background:var(--subtle); }
+.sidebar-document-row .sidebar-document { flex:1;min-width:0;margin:0;padding:10px 4px; }
+.sidebar-document-row .sidebar-document>span { overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0; }
+.sidebar-document-row .sidebar-document>svg,.sidebar-document-row input { flex-shrink:0; }
+.workspace-file-trigger { width:36px;height:44px;flex-shrink:0;border-radius:8px; }
+.workspace-file-menu { position:fixed;z-index:150;width:248px;max-width:calc(100vw - 24px);padding:6px;background:var(--surface);color:var(--ink);border:1px solid var(--line);border-radius:12px;box-shadow:0 12px 36px var(--shadow); }
+.workspace-file-menu>button { display:flex;align-items:center;gap:10px;width:100%;text-align:left;min-height:44px;padding:10px 12px;border-radius:7px;font-size:13px; }
+.workspace-file-menu>button:hover:not(:disabled),.workspace-file-menu>button:focus-visible { background:var(--subtle); }
+.workspace-file-menu>button:focus-visible { outline-offset:-2px; }
+.workspace-file-menu>button.danger { color:var(--danger);border-top:1px solid var(--line);margin-top:4px; }
+.workspace-file-menu>button:disabled { opacity:.5;cursor:not-allowed; }
+.workspace-file-menu>p { margin:8px 10px;font-size:12px;line-height:1.6;color:var(--muted); }
+.file-action-error,.workspace-file-menu>.file-action-error { color:var(--danger);font-size:14px;line-height:1.6; }
+.file-action-name { overflow-wrap:anywhere; }
+.workspace-sidebar .sidebar-section { overflow:visible; }
+dialog .actions { flex-wrap:wrap; }
+dialog input[aria-invalid=true] { border-color:var(--danger); }
+[inert].tool-tabs,[inert].tool-panel { opacity:.7; }
+@media(max-width:767px) { .workspace-file-trigger { width:44px; }.workspace-file-menu>button { font-size:14px; } }

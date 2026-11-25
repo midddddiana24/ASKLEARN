@@ -1,5 +1,16 @@
 # Developer verification
 
+## Workspace file management - 2026-11-25
+
+- Final TypeScript and Vite production build: PASS. The existing lazy Three.js chunk-size advisory remains non-fatal. `git diff --check` reports no whitespace errors.
+- Backend regression: **65 passed, 1 live PostgreSQL integration check skipped**, with two upstream dependency deprecation warnings. The new unselected-material deletion regression was observed failing before the targeted reset fix and passing afterward. Selected-source deletion still resets its workspace, while unrelated records and file type survive rename/deletion as appropriate. Existing ownership and CSRF protections remain in use.
+- Full Edge browser suite: **45 passed** (4.4 minutes). After the final pending-action menu lock, the **13 Workspace file-management tests passed again** (1.1 minutes), including a gated check that Rename cannot open while removal is saving.
+- New browser coverage: rename validation and persistence in Library, unchanged selected sources and chat history, reversible workspace removal and reselection, safe deletion cancellation/focus, related-history cleanup, preservation of an unrelated workspace, last-material deletion, rename/delete error recovery, duplicate submission prevention, streaming/generation/save/conflict/assessment guards, mobile keyboard menu navigation, and refresh retry without a repeated DELETE.
+- Additional gated cases cover background generation after a tool switch, delayed assessment creation after switching away, pending saved-study restoration, and submission completion after the assessment panel unmounts. Separate read-only review identified these asynchronous cases; the fixes and regressions were rechecked with no remaining critical or important review findings.
+- Responsive verification includes the existing 375/768/1440px light/dark application and login matrices. Inspected `artifacts/workspace-file-menu-mobile.png`, showing all three actions within the mobile viewport and a separate selected-file checkbox.
+- Public API shapes and database schema are unchanged. Document DELETE now clears the saved workspace only when its document IDs include the deleted source. No live student records, AI keys, provider settings or deployment configuration were changed. Tests use isolated fixtures. A server restart is required to load the updated deletion handler.
+- Boundaries: live PostgreSQL and hosted deployment were not exercised. Git metadata remains read-only here; no commit, push or deployment was performed. See [student instructions](student-guide.md) and [implementation ledger](workspace-file-actions-implementation.md).
+
 ## First-publish whitespace blocker - 2026-11-22
 
 The user's subsequent run staged 102 source files but had not created a commit or uploaded refs. Read-only inspection reproduced `git diff --cached --check` exiting 2 with one diagnostic: `frontend/src/style.css:19: new blank line at EOF`. Removed only the extra final newline from the working stylesheet. A no-index check against an empty file then produced no whitespace diagnostics (exit 1 reports content differences), and `git diff --check` passed for the working changes.

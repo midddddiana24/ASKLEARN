@@ -225,7 +225,7 @@ def history(q: str = Query(default='', max_length=100), type: Literal['all', 'do
             'next_offset': offset + limit if offset + limit < len(items) else None}
 
 
-def clear_workspace(db, user_id):
+def clear_workspace(db, user_id, document_id=None):
     row = db.get(WorkspaceState, user_id)
-    if row:
+    if row and (document_id is None or document_id in row.data.get('document_ids', [])):
         row.data = dict(EMPTY_WORKSPACE); row.version += 1; row.updated_at = time.time()

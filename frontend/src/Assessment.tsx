@@ -4,7 +4,7 @@ import { api } from './api'
 import { useApp } from './AppContext'
 import { useSavedState, SaveStatus, registerSaveFlusher, trackPendingSave, waitForPendingSave } from './useSavedState'
 
-export default function Assessment({ study, minutes, onUpdate, requestedAttempt, onAttempt, onState, Sources, Modal }: any) {
+export default function Assessment({ study, minutes, onUpdate, requestedAttempt, onAttempt, onState, Sources, Modal, onAssessmentState, onOperationStart }: any) {
   const { notify } = useApp()
   const progress = useSavedState(`/study-sets/${study.id}/progress`, { attempt_id: null as number | null, index: 0 })
   const [attempt, setAttempt] = useState<any>(null), [answer, setAnswer] = useState(''), [busy, setBusy] = useState(false)
@@ -14,14 +14,20 @@ export default function Assessment({ study, minutes, onUpdate, requestedAttempt,
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null), alive = useRef(true), indexRef = useRef(0)
   const answerFlight = useRef<Promise<boolean> | null>(null), flushDraft = useRef<() => Promise<boolean>>(async () => true), lastLoad = useRef(0)
   const questions = study.content.questions, index = progress.value.index
+  useEffect(() => { onAssessmentState?.({ active: study.kind === 'test' && !!attempt && !attempt.submitted, restoring: !progress.ready || loading || busy, attemptId: attempt?.id, deadline: attempt?.deadline }) }, [study.kind, attempt?.id, attempt?.submitted, progress.ready, loading, busy, onAssessmentState])
+  useEffect(() => () => { onAssessmentState?.({ active: false, restoring: false }) }, [onAssessmentState])
   useEffect(() => { if (attempt?.submitted) onState('success'); else if (progress.status.startsWith('Couldn’t')) onState('error') }, [attempt?.submitted, progress.status, onState])
   indexRef.current = index; draft.current = answer
-  const sync = (a: any) => { current.current = a; offset.current = a.server_time * 1000 - Date.now(); if (alive.current) setAttempt(a) }
+  const sync = (a: any) => { current.current = a; offset.current = a.server_time * 1000 - Date.now(); onAssessmentState?.({ active: study.kind === 'test' && !a.submitted, restoring: false, attemptId: a.id, deadline: a.deadline }); if (alive.current) setAttempt(a) }
   const restore = async (id: number) => {
-    await waitForPendingSave(`/attempts/${id}/answers`)
-    const a = await api(`/attempts/${id}`); sync(a); setConflict(false); setAnswerStatus('Answers saved')
-    const next = progress.value.attempt_id === a.id ? Math.min(progress.value.index, questions.length - 1) : 0
-    progress.change({ attempt_id: a.id, index: next }); setAnswer(a.answers[String(next)] || ''); onAttempt(a.id)
+    const finish = onOperationStart?.()
+    try {
+      await waitForPendingSave(`/attempts/${id}/answers`)
+      const a = await api(`/attempts/${id}`); if (!alive.current) return
+      sync(a); setConflict(false); setAnswerStatus('Answers saved')
+      const next = progress.value.attempt_id === a.id ? Math.min(progress.value.index, questions.length - 1) : 0
+      progress.change({ attempt_id: a.id, index: next }); setAnswer(a.answers[String(next)] || ''); onAttempt(a.id)
+    } finally { finish?.() }
   }
   useEffect(() => {
     alive.current = true
@@ -103,9 +109,9 @@ export default function Assessment({ study, minutes, onUpdate, requestedAttempt,
     tick(); const interval = setInterval(tick, 1000); return () => clearInterval(interval)
   }, [attempt?.id, attempt?.submitted])
   const start = async () => {
-    setBusy(true)
-    try { const a = await api('/attempts', { method: 'POST', body: JSON.stringify({ study_set_id: study.id, minutes }) }); sync(a); progress.change({ attempt_id: a.id, index: 0 }); setAnswer(a.answers['0'] || ''); onAttempt(a.id); void onUpdate() }
-    catch (error: any) { notify(error.message, start) } finally { setBusy(false) }
+    const finish = onOperationStart?.(); setBusy(true)
+    try { const a = await api('/attempts', { method: 'POST', body: JSON.stringify({ study_set_id: study.id, minutes }) }); if (!alive.current) { onAssessmentState?.({ active: study.kind === 'test' && !a.submitted, restoring: false, attemptId: a.id, deadline: a.deadline }); void onUpdate(); return }; sync(a); progress.change({ attempt_id: a.id, index: 0 }); setAnswer(a.answers['0'] || ''); onAttempt(a.id); void onUpdate() }
+    catch (error: any) { if (alive.current) notify(error.message, start) } finally { finish?.(); if (alive.current) setBusy(false) }
   }
   if (!progress.ready || loading) return <><SaveStatus saved={progress}/><div className="loading" role="status"><span className="spinner"/>Restoring assessment…</div></>
   const locked = busy || conflict || progress.conflict

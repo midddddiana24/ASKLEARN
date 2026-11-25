@@ -1,0 +1,308 @@
+import { test, expect } from '@playwright/test'
+import { settleEntry } from './entry'
+
+const lesson = 'Photosynthesis converts light energy into chemical energy stored in glucose. Plants use sunlight, water and carbon dioxide to produce glucose and oxygen. Chlorophyll absorbs light.'
+async function workspace(page, two = false) {
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  await page.goto('/register')
+  await page.getByLabel('Your name').fill('Casey')
+  await page.getByLabel('Email address').fill(`files-${Date.now()}-${Math.random().toString(36).slice(2, 7)}@example.com`)
+  await page.getByLabel('Password', { exact: true }).fill('workspace-files-password')
+  await page.getByRole('button', { name: 'Create account', exact: true }).click()
+  await settleEntry(page)
+  await page.getByRole('link', { name: 'My library', exact: true }).click()
+  for (const name of two ? ['Biology.txt', 'Review.txt'] : ['Biology.txt']) {
+    await page.locator('input[type=file]').setInputFiles({ name, mimeType: 'text/plain', buffer: Buffer.from(lesson) })
+    await expect(page.getByRole('heading', { name, exact: true })).toBeVisible()
+    await page.getByLabel(`Select ${name}`).check()
+  }
+  await page.getByRole('button', { name: /Open workspace/ }).click()
+  await expect(page.locator('.workspace-title .save-status')).toContainText('Saved')
+  await expect(page.getByRole('tab', { name: 'Summary', exact: true })).toBeEnabled()
+}
+async function menu(page, name = 'Biology.txt') {
+  await page.getByRole('button', { name: `Actions for ${name}`, exact: true }).click()
+  return page.getByRole('menu', { name: `Actions for ${name}`, exact: true })
+}
+async function chat(page) {
+  await page.getByRole('textbox', { name: 'Ask a question about your lesson' }).fill('What is photosynthesis?')
+  await page.getByRole('button', { name: 'Send question', exact: true }).click()
+  await expect(page.locator('.message.assistant')).toContainText('chemical energy')
+  await expect(page.getByRole('button', { name: 'Stop generating', exact: true })).toHaveCount(0)
+  await expect.poll(async () => (await (await page.request.get('/api/workspace')).json()).data.chat_id).not.toBeNull()
+  await expect(page.locator('.workspace-title .save-status')).toContainText('Saved')
+}
+
+test('Workspace rename validates, preserves selection and history, and persists in Library', async ({ page }) => {
+  await workspace(page)
+  await chat(page)
+  const before = await (await page.request.get('/api/workspace')).json()
+  const fileMenu = await menu(page)
+  await expect(page.getByRole('checkbox', { name: 'Select Biology.txt', exact: true })).toBeChecked()
+  await fileMenu.getByRole('menuitem', { name: 'Rename', exact: true }).click()
+  await expect(page.getByLabel('Document name')).toBeFocused()
+  await page.getByLabel('Document name').fill('Bad/name')
+  await page.getByRole('button', { name: 'Save name', exact: true }).click()
+  await expect(page.getByRole('dialog').getByRole('alert')).toContainText('without')
+  await page.getByLabel('Document name').fill('  Cell energy  ')
+  await page.getByRole('button', { name: 'Save name', exact: true }).click()
+  await expect(page.getByRole('dialog')).toHaveCount(0)
+  await expect(page.getByRole('checkbox', { name: 'Select Cell energy', exact: true })).toBeChecked()
+  expect((await (await page.request.get('/api/workspace')).json()).data).toEqual(before.data)
+  await expect(page.locator('.message.assistant')).toContainText('chemical energy')
+  await page.reload()
+  await expect(page.getByRole('checkbox', { name: 'Select Cell energy', exact: true })).toBeChecked()
+  await page.getByRole('link', { name: 'My library', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'Cell energy', exact: true })).toBeVisible()
+})
+
+test('Remove saves the remaining selection and preserves Library files and conversations', async ({ page }) => {
+  await workspace(page, true)
+  await chat(page)
+  const selectedBefore = (await (await page.request.get('/api/workspace')).json()).data.document_ids
+  let release!: () => void
+  const gate = new Promise<void>(resolve => { release = resolve })
+  await page.route('**/api/workspace', async route => { if (route.request().method() === 'PUT') await gate; await route.continue() })
+  const actions = await menu(page)
+  await actions.getByRole('menuitem', { name: 'Remove from workspace', exact: true }).click()
+  try { await expect(actions.getByRole('menuitem', { name: 'Rename', exact: true })).toBeDisabled() }
+  finally { release() }
+  await expect(page.getByRole('checkbox', { name: 'Select Biology.txt', exact: true })).not.toBeChecked()
+  await expect(page.getByRole('checkbox', { name: 'Select Review.txt', exact: true })).toBeChecked()
+  await expect(page.locator('.workspace-title .save-status')).toContainText('Saved')
+  await page.unroute('**/api/workspace')
+  expect((await (await page.request.get('/api/workspace')).json()).data.document_ids).toHaveLength(selectedBefore.length - 1)
+  expect((await (await page.request.get('/api/documents')).json())).toHaveLength(2)
+  expect((await (await page.request.get('/api/chats')).json())).toHaveLength(1)
+  await page.reload()
+  await expect(page.getByRole('checkbox', { name: 'Select Biology.txt', exact: true })).not.toBeChecked()
+  await expect((await menu(page)).getByRole('menuitem', { name: 'Remove from workspace', exact: true })).toBeDisabled()
+  await page.keyboard.press('Escape')
+  await page.getByRole('checkbox', { name: 'Select Biology.txt', exact: true }).check()
+  await expect(page.locator('.workspace-title .save-status')).toContainText('Saved')
+})
+
+test('Delete confirmation cancels safely, preserves an unrelated workspace, then clears a deleted source', async ({ page }) => {
+  await workspace(page, true)
+  await (await menu(page, 'Review.txt')).getByRole('menuitem', { name: 'Remove from workspace', exact: true }).click()
+  await expect(page.locator('.workspace-title .save-status')).toContainText('Saved')
+  await chat(page)
+  const before = await (await page.request.get('/api/workspace')).json()
+  await (await menu(page, 'Review.txt')).getByRole('menuitem', { name: 'Delete from account', exact: true }).click()
+  await expect(page.getByRole('button', { name: 'Keep my material', exact: true })).toBeFocused()
+  await expect(page.getByRole('dialog')).toContainText('assessment attempts')
+  await page.getByRole('button', { name: 'Keep my material', exact: true }).click()
+  await expect(page.getByRole('checkbox', { name: 'Select Review.txt', exact: true })).toBeVisible()
+  await (await menu(page, 'Review.txt')).getByRole('menuitem', { name: 'Delete from account', exact: true }).click()
+  await page.getByRole('button', { name: 'Delete permanently', exact: true }).click()
+  await expect(page.getByRole('checkbox', { name: 'Select Review.txt', exact: true })).toHaveCount(0)
+  await expect(page.locator('.workspace-title .save-status')).toContainText('Saved')
+  expect((await (await page.request.get('/api/workspace')).json()).data).toEqual(before.data)
+  await expect(page.locator('.message.assistant')).toContainText('chemical energy')
+  await (await menu(page)).getByRole('menuitem', { name: 'Delete from account', exact: true }).click()
+  await page.getByRole('button', { name: 'Delete permanently', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'Choose a lesson to begin.', exact: true })).toBeVisible()
+  expect(await (await page.request.get('/api/chats')).json()).toHaveLength(0)
+  expect(await (await page.request.get('/api/documents')).json()).toHaveLength(0)
+})
+
+test('Rename and Delete recover from failures, and pending deletion cannot be submitted twice', async ({ page }) => {
+  await workspace(page)
+  const doc = (await (await page.request.get('/api/documents')).json())[0]
+  await page.route(`**/api/documents/${doc.id}`, route => route.request().method() === 'PATCH'
+    ? route.fulfill({ status: 503, contentType: 'application/json', body: '{"detail":"Name could not be saved"}' }) : route.continue())
+  await (await menu(page)).getByRole('menuitem', { name: 'Rename', exact: true }).click()
+  await page.getByLabel('Document name').fill('New lesson')
+  await page.getByRole('button', { name: 'Save name', exact: true }).click()
+  await expect(page.getByRole('dialog').getByRole('alert')).toContainText('Name could not be saved')
+  await expect(page.getByLabel('Document name')).toHaveValue('New lesson')
+  await page.getByRole('button', { name: 'Cancel', exact: true }).click()
+  await page.unroute(`**/api/documents/${doc.id}`)
+  let release!: () => void, count = 0
+  const gate = new Promise<void>(resolve => { release = resolve })
+  await page.route(`**/api/documents/${doc.id}`, async route => {
+    if (route.request().method() !== 'DELETE') return route.continue()
+    count++; await gate
+    await route.fulfill({ status: 503, contentType: 'application/json', body: '{"detail":"Delete failed. Try again."}' })
+  })
+  await (await menu(page)).getByRole('menuitem', { name: 'Delete from account', exact: true }).click()
+  const confirm = page.getByRole('button', { name: 'Delete permanently', exact: true })
+  await confirm.click()
+  await expect(page.getByRole('button', { name: 'Deleting…', exact: true })).toBeDisabled()
+  await page.keyboard.press('Escape')
+  await expect(page.getByRole('dialog')).toBeVisible()
+  expect(count).toBe(1)
+  release()
+  await expect(page.getByRole('dialog').getByRole('alert')).toContainText('Delete failed')
+  expect(await (await page.request.get('/api/documents')).json()).toHaveLength(1)
+  await page.unroute(`**/api/documents/${doc.id}`)
+  await page.getByRole('button', { name: 'Delete permanently', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'Choose a lesson to begin.', exact: true })).toBeVisible()
+})
+
+test('AI generation blocks membership changes while Rename remains available', async ({ page }) => {
+  await workspace(page)
+  let release!: () => void
+  const gate = new Promise<void>(resolve => { release = resolve })
+  await page.route('**/api/generate', async route => { await gate; await route.continue() })
+  await page.getByRole('tab', { name: 'Summary', exact: true }).click()
+  await page.getByRole('button', { name: 'Generate summary', exact: true }).click()
+  await expect(page.getByText(/Creating your summary/)).toBeVisible()
+  const actions = await menu(page)
+  await expect(actions.getByRole('menuitem', { name: 'Rename', exact: true })).toBeEnabled()
+  await expect(actions.getByRole('menuitem', { name: 'Remove from workspace', exact: true })).toBeDisabled()
+  await expect(actions.getByRole('menuitem', { name: 'Delete from account', exact: true })).toBeDisabled()
+  await expect(actions).toContainText('study request')
+  await page.keyboard.press('Escape'); release()
+  await expect(page.locator('.reading-result')).toBeVisible()
+  await expect((await menu(page)).getByRole('menuitem', { name: 'Delete from account', exact: true })).toBeEnabled()
+})
+
+test('Active timed practice guards deletion without changing the deadline', async ({ page }) => {
+  await workspace(page)
+  await page.getByRole('tab', { name: 'Practice test', exact: true }).click()
+  await page.getByRole('button', { name: 'Generate practice test', exact: true }).click()
+  await page.getByRole('button', { name: 'Begin practice test', exact: true }).click()
+  await expect(page.getByRole('timer')).toBeVisible()
+  const attempts = await (await page.request.get('/api/attempts')).json()
+  const before = await (await page.request.get(`/api/attempts/${attempts[0].id}`)).json()
+  const actions = await menu(page)
+  await expect(actions).toContainText('active practice test')
+  await expect(actions.getByRole('menuitem', { name: 'Delete from account', exact: true })).toBeDisabled()
+  await expect(actions.getByRole('menuitem', { name: 'Rename', exact: true })).toBeEnabled()
+  expect((await (await page.request.get(`/api/attempts/${attempts[0].id}`)).json()).deadline).toBe(before.deadline)
+})
+
+test('Save failures and conflicts block Remove/Delete until saved state recovers', async ({ page }) => {
+  await workspace(page)
+  await page.route('**/api/workspace', route => route.request().method() === 'PUT'
+    ? route.fulfill({ status: 503, contentType: 'application/json', body: '{"detail":"Save failed"}' }) : route.continue())
+  await page.getByRole('tab', { name: 'Summary', exact: true }).click()
+  await expect(page.locator('.workspace-title .save-status')).toContainText('Couldn')
+  let actions = await menu(page)
+  await expect(actions.getByRole('menuitem', { name: 'Delete from account', exact: true })).toBeDisabled()
+  await page.keyboard.press('Escape'); await page.unroute('**/api/workspace')
+  await page.getByRole('button', { name: 'Retry save', exact: true }).click()
+  await expect(page.locator('.workspace-title .save-status')).toContainText('Saved')
+  await page.route('**/api/workspace', route => route.request().method() === 'PUT'
+    ? route.fulfill({ status: 409, contentType: 'application/json', body: '{"detail":"Changed on another device"}' }) : route.continue())
+  await page.getByRole('tab', { name: 'Reviewer', exact: true }).click()
+  await expect(page.locator('.workspace-title .save-status')).toContainText('Updated on another device')
+  actions = await menu(page)
+  await expect(actions.getByRole('menuitem', { name: 'Remove from workspace', exact: true })).toBeDisabled()
+  await expect(actions.getByRole('menuitem', { name: 'Rename', exact: true })).toBeEnabled()
+  await page.keyboard.press('Escape'); await page.unroute('**/api/workspace')
+  await page.locator('.workspace-title').getByRole('button', { name: 'Load latest', exact: true }).click()
+  await expect((await menu(page)).getByRole('menuitem', { name: 'Delete from account', exact: true })).toBeEnabled()
+})
+
+test('Mobile file menu is keyboard accessible and does not toggle selection', async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 812 })
+  await workspace(page)
+  await page.getByRole('button', { name: 'Use dark theme' }).click()
+  await page.getByRole('button', { name: 'Toggle workspace sidebar' }).click()
+  const actions = await menu(page)
+  await expect(actions.getByRole('menuitem', { name: 'Rename', exact: true })).toBeFocused()
+  await page.keyboard.press('ArrowDown')
+  await expect(actions.getByRole('menuitem', { name: 'Remove from workspace', exact: true })).toBeFocused()
+  await expect(page.getByRole('checkbox', { name: 'Select Biology.txt', exact: true })).toBeChecked()
+  const bounds = await actions.boundingBox()
+  expect(bounds!.x).toBeGreaterThanOrEqual(0); expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(375)
+  await page.screenshot({ path: '../artifacts/workspace-file-menu-mobile.png' })
+  await page.keyboard.press('Escape')
+  await expect(page.getByRole('button', { name: 'Actions for Biology.txt', exact: true })).toBeFocused()
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+})
+
+test('Refresh failure after deletion retries refresh without deleting again', async ({ page }) => {
+  await workspace(page)
+  const doc = (await (await page.request.get('/api/documents')).json())[0]
+  let deletes = 0
+  await page.route(`**/api/documents/${doc.id}`, async route => { if (route.request().method() === 'DELETE') deletes++; await route.continue() })
+  await page.route('**/api/documents', route => route.fulfill({ status: 503, contentType: 'application/json', body: '{"detail":"Refresh failed"}' }))
+  await (await menu(page)).getByRole('menuitem', { name: 'Delete from account', exact: true }).click()
+  await page.getByRole('button', { name: 'Delete permanently', exact: true }).click()
+  await expect(page.getByRole('button', { name: 'Retry workspace refresh', exact: true })).toBeVisible()
+  await page.unroute('**/api/documents')
+  await page.getByRole('button', { name: 'Retry workspace refresh', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'Choose a lesson to begin.', exact: true })).toBeVisible()
+  expect(deletes).toBe(1)
+})
+
+test('Background generation stays guarded after switching tools', async ({ page }) => {
+  await workspace(page)
+  let release!: () => void
+  const gate = new Promise<void>(resolve => { release = resolve })
+  await page.route('**/api/generate', async route => { await gate; await route.continue() })
+  await page.getByRole('tab', { name: 'Summary', exact: true }).click()
+  await page.getByRole('button', { name: 'Generate summary', exact: true }).click()
+  await expect(page.getByText(/Creating your summary/)).toBeVisible()
+  await page.getByRole('tab', { name: 'Ask your lesson', exact: true }).click()
+  let actions = await menu(page)
+  await expect(actions.getByRole('menuitem', { name: 'Remove from workspace', exact: true })).toBeDisabled()
+  await expect(actions.getByRole('menuitem', { name: 'Delete from account', exact: true })).toBeDisabled()
+  await page.keyboard.press('Escape'); release()
+  actions = await menu(page)
+  await expect(actions.getByRole('menuitem', { name: 'Delete from account', exact: true })).toBeEnabled()
+  await expect(page.getByRole('tab', { name: 'Ask your lesson', exact: true })).toHaveAttribute('aria-selected', 'true')
+})
+
+test('Pending assessment creation cannot be bypassed by switching tools', async ({ page }) => {
+  await workspace(page)
+  await page.getByRole('tab', { name: 'Practice test', exact: true }).click()
+  await page.getByRole('button', { name: 'Generate practice test', exact: true }).click()
+  await expect(page.getByRole('button', { name: 'Begin practice test', exact: true })).toBeVisible()
+  let release!: () => void, accepted!: () => void
+  const gate = new Promise<void>(resolve => { release = resolve }), posted = new Promise<void>(resolve => { accepted = resolve })
+  await page.route('**/api/attempts', async route => {
+    if (route.request().method() !== 'POST') return route.continue()
+    const response = await route.fetch(); accepted(); await gate; await route.fulfill({ response })
+  })
+  await page.getByRole('button', { name: 'Begin practice test', exact: true }).click()
+  await posted
+  await expect((await menu(page)).getByRole('menuitem', { name: 'Remove from workspace', exact: true })).toBeDisabled()
+  await page.keyboard.press('Escape')
+  await page.getByRole('tab', { name: 'Ask your lesson', exact: true }).click()
+  await expect((await menu(page)).getByRole('menuitem', { name: 'Delete from account', exact: true })).toBeDisabled()
+  await page.keyboard.press('Escape'); release()
+  await expect(page.locator('.workspace-title .save-status')).toContainText('Saved')
+  await expect.poll(async () => (await (await page.request.get('/api/workspace')).json()).data.attempt_id).toBeNull()
+  await expect((await menu(page)).getByRole('menuitem', { name: 'Delete from account', exact: true })).toBeDisabled()
+})
+
+test('Opening saved study history blocks file changes until restoration finishes', async ({ page }) => {
+  await workspace(page)
+  await page.getByRole('tab', { name: 'Summary', exact: true }).click()
+  await page.getByRole('button', { name: 'Generate summary', exact: true }).click()
+  await expect(page.locator('.reading-result')).toBeVisible()
+  const study = (await (await page.request.get('/api/study-sets')).json())[0]
+  await page.getByRole('tab', { name: 'Ask your lesson', exact: true }).click()
+  let release!: () => void
+  const gate = new Promise<void>(resolve => { release = resolve })
+  await page.route(`**/api/study-sets/${study.id}`, async route => { await gate; await route.continue() })
+  await page.locator('.workspace-sidebar .history-item').filter({ hasText: 'Summary' }).click()
+  const actions = await menu(page)
+  await expect(actions.getByRole('menuitem', { name: 'Remove from workspace', exact: true })).toBeDisabled()
+  await expect(actions.getByRole('menuitem', { name: 'Delete from account', exact: true })).toBeDisabled()
+  await page.keyboard.press('Escape'); release()
+  await expect(page.locator('.reading-result')).toBeVisible()
+})
+
+test('A completed assessment unlocks file actions after switching away during submission', async ({ page }) => {
+  await workspace(page)
+  await page.getByRole('tab', { name: 'Practice test', exact: true }).click()
+  await page.getByRole('button', { name: 'Generate practice test', exact: true }).click()
+  await page.getByRole('button', { name: 'Begin practice test', exact: true }).click()
+  await expect(page.getByRole('timer')).toBeVisible()
+  for (let i = 0; i < 19; i++) await page.getByRole('button', { name: 'Next question', exact: true }).click()
+  await page.getByRole('button', { name: 'Finish and see results', exact: true }).click()
+  let release!: () => void, accepted!: () => void
+  const gate = new Promise<void>(resolve => { release = resolve }), posted = new Promise<void>(resolve => { accepted = resolve })
+  await page.route('**/api/attempts/*/submit', async route => { const response = await route.fetch(); accepted(); await gate; await route.fulfill({ response }) })
+  await page.getByRole('button', { name: 'Submit answers', exact: true }).click()
+  await posted
+  await page.getByRole('button', { name: 'Close dialog', exact: true }).click()
+  await page.getByRole('tab', { name: 'Ask your lesson', exact: true }).click()
+  release()
+  await expect((await menu(page)).getByRole('menuitem', { name: 'Delete from account', exact: true })).toBeEnabled()
+})

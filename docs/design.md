@@ -1,5 +1,13 @@
 # ASKLearn design decisions
 
+## Workspace material actions - 2026-11-25
+
+Each material in the Workspace sidebar has an always-visible ellipsis button outside its selection label. Its portal-based menu offers Rename, Remove from workspace, and Delete from account; the latter is a separately styled destructive action. Menu placement fits the viewport, touch controls meet the existing mobile sizing, arrow/Home/End keys move between enabled items, and Escape returns focus to the trigger. The dialogs share the existing native modal presentation, explicitly focus the name or safe cancellation action, and retain entered values on errors.
+
+Rename updates only the display name through the existing owned document PATCH endpoint. Remove changes saved selection through the existing versioned workspace PUT endpoint, preserves the remaining materials and returns to Ask while retaining all saved historical study records. Confirmed DELETE retains the established related-record cascade but now resets a saved workspace only if it references the deleted source. There is no schema migration or API shape change.
+
+Membership/deletion operations flush pending saved work, block duplicate submissions, and use actual request/restoration/assessment state. Root-owned operation tokens persist across tool switches without disabling the existing background-generation navigation. Timed-attempt status survives panel unmount and is cleared on completion. Resource read revisions prevent earlier history reads from restoring deleted items; post-delete refresh failures offer a dedicated retry and never repeat deletion.
+
 ## 2D student poses - 2026-11-22
 
 The user replaced the 3D human character with a 2D illustrated student. This decision supersedes the 3D character details in the earlier implementation record. The original local SVG now has eight distinct poses: idle, wave, point, think, read, upload, success and error. Arm geometry, hand gestures, facial expression and props change by pose. The intro uses wave/point/success; tours use pointing, a raised document, thinking, reading and success; the companion follows actual task state. Avatar preferences and cobalt branding remain intact.

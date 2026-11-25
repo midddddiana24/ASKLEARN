@@ -1,5 +1,7 @@
 import StudyArtwork from './StudyArtwork'
-import { useState, useEffect, useRef, type ReactNode } from 'react'
+import Modal from './Modal'
+import WorkspaceFileActions, { type WorkspaceMaterial } from './WorkspaceFileActions'
+import { useState, useEffect, useRef, useCallback, type ReactNode } from 'react'
 import { Link, Navigate, Route, Routes, useNavigate, useLocation } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import ReactMarkdown from 'react-markdown'
@@ -37,12 +39,6 @@ function IconButton({ label, children, ...props }: any) { return <button classNa
 function Empty({ title, children, illustration = false }: { title: string; children: ReactNode; illustration?: boolean }) { return <div className="empty">{illustration ? <StudyArtwork className="empty-study-art"/> : <StudyBookIcon size={32}/>}<h2>{title}</h2><p>{children}</p></div> }
 function Loading({ label = 'Preparing your study space…', phase = 'processing' }: { label?: string; phase?: TaskPhase }) { return <div className="loading" role="status"><TaskVisual phase={phase}/><p>{label}</p><div className="skeleton"/><div className="skeleton short"/></div> }
 function Markdown({ text }: { text: string }) { return <div className="prose"><ReactMarkdown>{text}</ReactMarkdown></div> }
-
-function Modal({ title, children, close }: { title: string; children: ReactNode; close: () => void }) {
-  const ref = useRef<HTMLDialogElement>(null)
-  useEffect(() => { const dialog = ref.current!; dialog.showModal(); return () => dialog.close() }, [])
-  return <dialog ref={ref} onCancel={close} onClick={e => { if (e.target === e.currentTarget) close() }}><div className="modal-head"><h2>{title}</h2><IconButton label="Close dialog" onClick={close}><X/></IconButton></div>{children}</dialog>
-}
 
 function Sources({ sources = [], ids }: any) {
   const [open, setOpen] = useState<any>(null)
@@ -169,35 +165,99 @@ function Workspace() {
   const { notify, profile, updateProfile } = useApp(), location = useLocation()
   const state = useSavedState('/workspace', EMPTY_WORKSPACE)
   const [companionState, setCompanionState] = useState<CompanionState>('studying')
+  const [fileMutating, setFileMutating] = useState(false), [taskBusy, setTaskBusy] = useState(false)
+  const [assessmentState, setAssessmentState] = useState({ active: false, restoring: false })
+  const [resourceError, setResourceError] = useState('')
+  const fileLock = useRef(false), mounted = useRef(true)
+  const operations = useRef(new Set<symbol>()), resourceRevision = useRef(0)
+  const [pendingOperations, setPendingOperations] = useState(0), [knownTimed, setKnownTimed] = useState<Record<number, number>>({})
+  const trackOperation = useCallback(() => {
+    const id = Symbol('workspace operation'); operations.current.add(id); setPendingOperations(operations.current.size)
+    return () => { operations.current.delete(id); if (mounted.current) setPendingOperations(operations.current.size) }
+  }, [])
+  const reportAssessment = useCallback((next: { active: boolean; restoring: boolean; attemptId?: number; deadline?: number }) => {
+    if (!mounted.current) return
+    setAssessmentState({ active: next.active, restoring: next.restoring })
+    if (next.attemptId) setKnownTimed(old => { const updated = { ...old }; if (next.active) updated[next.attemptId!] = next.deadline ?? Infinity; else delete updated[next.attemptId!]; return updated })
+  }, [])
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
   const { document_ids: selected, tab, chat_id: chatId, study_set_id: studyId } = state.value
   useEffect(() => { setCompanionState('studying') }, [tab])
   const [docs, setDocs] = useState<any[]>([]), [chats, setChats] = useState<any[]>([]), [sets, setSets] = useState<any[]>([]), [attempts, setAttempts] = useState<any[]>([])
   const [saved, setSaved] = useState<any>(null), [menu, setMenu] = useState(false), [ready, setReady] = useState(false), [toolLoading, setToolLoading] = useState(false)
-  const loadLists = async () => { const [c, s, a] = await Promise.all([api('/chats'), api('/study-sets'), api('/attempts')]); setChats(c); setSets(s); setAttempts(a) }
+  const loadLists = async () => { const revision = ++resourceRevision.current; const [c, s, a] = await Promise.all([api('/chats'), api('/study-sets'), api('/attempts')]); if (mounted.current && revision === resourceRevision.current) { setChats(c); setSets(s); setAttempts(a); setKnownTimed(old => Object.fromEntries(Object.entries(old).filter(([id]) => !a.some(attempt => attempt.id === Number(id) && attempt.submitted)))) } }
   const load = async () => { try { setDocs(await api('/documents')); await loadLists() } catch (e: any) { notify(e.message, load) } finally { setReady(true) } }
   useEffect(() => { void load() }, [])
   useEffect(() => { let active = true; if (studyId) { setToolLoading(true); api(`/study-sets/${studyId}`).then(s => { if (active) setSaved(s) }).catch(e => notify(e.message)).finally(() => { if (active) setToolLoading(false) }) } else setSaved(null); return () => { active = false } }, [studyId])
-  const choose = (ids: number[]) => state.change({ ...EMPTY_WORKSPACE, document_ids: ids })
-  const openStudy = async (id: number, attemptId: number | null = null) => { try { const s = await api(`/study-sets/${id}`); setSaved(s); state.change({ ...EMPTY_WORKSPACE, document_ids: s.document_ids, study_set_id: s.id, tab: s.kind, attempt_id: attemptId }); setMenu(false) } catch (e: any) { notify(e.message) } }
-  return <><Header workspace openMenu={() => setMenu(!menu)}/><div className="workspace-shell"><aside className={'workspace-sidebar ' + (menu ? 'is-open' : '')}><div className="sidebar-section"><div className="sidebar-heading"><h2>Study materials</h2><Link to="/library" aria-label="Add materials"><Plus size={18}/></Link></div>{docs.length === 0 && <p className="fine muted">Your uploaded materials appear here.</p>}{docs.map(d => <label className="sidebar-document" key={d.id}><input type="checkbox" disabled={!state.ready || state.conflict} checked={selected.includes(d.id)} onChange={e => { if (e.target.checked && selected.length >= 20) { notify('Select up to 20 materials.'); return } choose(e.target.checked ? [...selected, d.id] : selected.filter(id => id !== d.id)) }}/><FileText size={16}/><span>{d.filename}</span></label>)}</div>
-    <div className="sidebar-section"><div className="sidebar-heading"><h2>Conversations</h2><IconButton label="New chat" disabled={state.conflict} onClick={() => { state.change(v => ({ ...v, chat_id: null, tab: 'chat', study_set_id: null, attempt_id: null })); setMenu(false) }}><Plus size={17}/></IconButton></div>{chats.length === 0 && <p className="fine muted">Room for your first question.</p>}{chats.map(c => <button className={'history-item ' + (c.id === chatId ? 'active' : '')} key={c.id} disabled={state.conflict} onClick={() => { state.change({ ...EMPTY_WORKSPACE, document_ids: c.document_ids, chat_id: c.id }); setMenu(false) }}><MessageSquare size={15}/>{c.title}</button>)}</div>
-    <div className="sidebar-section"><h2>Saved study tools</h2>{sets.length === 0 && <p className="fine muted">Generated tools are saved here.</p>}{sets.map(s => <button className="history-item" key={s.id} onClick={() => openStudy(s.id)} disabled={state.conflict}><Layers size={15}/><span>{tools.find(t => t.id === s.kind)?.label} <small>{new Date(s.created_at * 1000).toLocaleDateString()}</small></span></button>)}</div>
-    {attempts.length > 0 && <div className="sidebar-section"><h2>Practice history</h2>{attempts.map(a => <button key={a.id} className="history-item" onClick={() => openStudy(a.study_set_id, a.id)} disabled={state.conflict}><GraduationCap size={15}/>{a.kind === 'test' ? 'Practice test' : 'Quiz'} · {a.submitted ? `${a.score}/${a.total}` : 'In progress'}</button>)}</div>}
+  const blockedReason = fileMutating ? 'Finishing a file change. Please wait.'
+    : !ready || !state.ready || toolLoading || assessmentState.restoring ? 'Wait for your saved workspace to finish loading.'
+    : resourceError ? 'Refresh the workspace before changing files.'
+    : state.conflict ? 'Use Load latest to resolve the workspace conflict first.'
+    : state.status.startsWith('Couldn') ? 'Use Retry save before changing workspace files.'
+    : taskBusy || pendingOperations > 0 ? 'Wait for the current study request to finish before removing or deleting a material.'
+    : assessmentState.active || Object.values(knownTimed).some(deadline => deadline * 1000 > Date.now()) || attempts.some(attempt => attempt.kind === 'test' && !attempt.submitted && attempt.deadline * 1000 > Date.now()) ? 'Finish your active practice test before removing or deleting a material.' : ''
+  const fileChange = async (needsSavedProgress: boolean, operation: () => Promise<void>) => {
+    if (fileLock.current) throw new Error('Another file change is still being saved.')
+    if (needsSavedProgress && blockedReason) throw new Error(blockedReason)
+    fileLock.current = true; setFileMutating(true)
+    try {
+      if (needsSavedProgress && !await flushSavedStates()) throw new Error('Your latest progress could not be saved. Use Retry save or Load latest, then try again.')
+      if (!mounted.current) return
+      await operation()
+    } finally { fileLock.current = false; if (mounted.current) setFileMutating(false) }
+  }
+  const renameMaterial = (material: WorkspaceMaterial, name: string) => fileChange(false, async () => {
+    const updated = await api(`/documents/${material.id}`, { method: 'PATCH', body: JSON.stringify({ filename: name }) })
+    if (mounted.current) { setDocs(old => old.map(doc => doc.id === material.id ? updated : doc)); notify('Material renamed.') }
+  })
+  const removeMaterial = (material: WorkspaceMaterial) => fileChange(true, async () => {
+    if (!selected.includes(material.id)) return
+    setSaved(null)
+    state.change({ ...EMPTY_WORKSPACE, document_ids: selected.filter(id => id !== material.id) })
+    if (!await state.flush()) throw new Error('Removal was not saved. Use Retry save or Load latest before changing more files.')
+    if (mounted.current) notify('Material removed from this workspace. It remains in My library with its saved history.')
+  })
+  const refreshAfterDelete = async () => {
+    const revision = ++resourceRevision.current
+    try {
+      const [documents, conversations, studies, practice] = await Promise.all([api('/documents'), api('/chats'), api('/study-sets'), api('/attempts'), state.reload()])
+      if (mounted.current && revision === resourceRevision.current) { setDocs(documents); setChats(conversations); setSets(studies); setAttempts(practice); setResourceError('') }
+    } catch {
+      if (mounted.current && revision === resourceRevision.current) { setResourceError('The material was deleted, but the workspace could not refresh.'); notify('The material was deleted. Refresh the workspace to continue.', () => { void refreshAfterDelete() }) }
+    }
+  }
+  const deleteMaterial = (material: WorkspaceMaterial) => fileChange(true, async () => {
+    ++resourceRevision.current
+    await api(`/documents/${material.id}`, { method: 'DELETE' })
+    if (!mounted.current) return
+    setDocs(old => old.filter(doc => doc.id !== material.id))
+    await refreshAfterDelete()
+  })
+  const choose = (ids: number[]) => { if (!blockedReason) state.change({ ...EMPTY_WORKSPACE, document_ids: ids }) }
+
+  const openStudy = async (id: number, attemptId: number | null = null) => { if (fileLock.current) return; const finish = trackOperation(); try { const s = await api(`/study-sets/${id}`); if (!mounted.current) return; setSaved(s); state.change({ ...EMPTY_WORKSPACE, document_ids: s.document_ids, study_set_id: s.id, tab: s.kind, attempt_id: attemptId }); setMenu(false) } catch (e: any) { if (mounted.current) notify(e.message) } finally { finish() } }
+  return <><Header workspace openMenu={() => setMenu(!menu)}/><div className="workspace-shell"><aside className={'workspace-sidebar ' + (menu ? 'is-open' : '')}><div className="sidebar-section"><div className="sidebar-heading"><h2>Study materials</h2><Link to="/library" aria-label="Add materials"><Plus size={18}/></Link></div>{docs.length === 0 && <p className="fine muted">Your uploaded materials appear here.</p>}{docs.map(d => <div className="sidebar-document-row" key={d.id}><label className="sidebar-document"><input type="checkbox" aria-label={`Select ${d.filename}`} disabled={!!blockedReason} checked={selected.includes(d.id)} onChange={e => { if (e.target.checked && selected.length >= 20) { notify('Select up to 20 materials.'); return } choose(e.target.checked ? [...selected, d.id] : selected.filter(id => id !== d.id)) }}/><FileText size={16}/><span title={d.filename}>{d.filename}</span></label><WorkspaceFileActions material={d} selected={selected.includes(d.id)} disabled={fileMutating} blockedReason={blockedReason} onRename={renameMaterial} onRemove={removeMaterial} onDelete={deleteMaterial}/></div>)}</div>
+    <div className="sidebar-section"><div className="sidebar-heading"><h2>Conversations</h2><IconButton label="New chat" disabled={state.conflict || fileMutating || !!resourceError} onClick={() => { state.change(v => ({ ...v, chat_id: null, tab: 'chat', study_set_id: null, attempt_id: null })); setMenu(false) }}><Plus size={17}/></IconButton></div>{chats.length === 0 && <p className="fine muted">Room for your first question.</p>}{chats.map(c => <button className={'history-item ' + (c.id === chatId ? 'active' : '')} key={c.id} disabled={state.conflict || fileMutating || !!resourceError} onClick={() => { state.change({ ...EMPTY_WORKSPACE, document_ids: c.document_ids, chat_id: c.id }); setMenu(false) }}><MessageSquare size={15}/>{c.title}</button>)}</div>
+    <div className="sidebar-section"><h2>Saved study tools</h2>{sets.length === 0 && <p className="fine muted">Generated tools are saved here.</p>}{sets.map(s => <button className="history-item" key={s.id} onClick={() => openStudy(s.id)} disabled={state.conflict || fileMutating || !!resourceError}><Layers size={15}/><span>{tools.find(t => t.id === s.kind)?.label} <small>{new Date(s.created_at * 1000).toLocaleDateString()}</small></span></button>)}</div>
+    {attempts.length > 0 && <div className="sidebar-section"><h2>Practice history</h2>{attempts.map(a => <button key={a.id} className="history-item" onClick={() => openStudy(a.study_set_id, a.id)} disabled={state.conflict || fileMutating || !!resourceError}><GraduationCap size={15}/>{a.kind === 'test' ? 'Practice test' : 'Quiz'} · {a.submitted ? `${a.score}/${a.total}` : 'In progress'}</button>)}</div>}
     <div className="sidebar-footer"><BookOpen size={20}/><p>Small steps.<br/>Deeper understanding.</p></div></aside>
     <main id="main" className="workspace-main"><div className="workspace-title"><div><h1>Your study space</h1><p className="muted">{selected.length ? `${selected.length} material${selected.length > 1 ? 's' : ''} selected · Let’s connect the dots.` : 'Choose materials from the sidebar to get started.'}</p></div><SaveStatus saved={state}/></div>
-      <div className="tool-tabs" role="tablist" aria-label="Study tools">{tools.map(t => <button role="tab" aria-selected={tab === t.id} aria-controls="tool-panel" disabled={!state.ready || state.conflict} key={t.id} onClick={() => { if (tab === t.id) return; setSaved(null); state.change(v => ({ ...v, tab: t.id, study_set_id: null, attempt_id: null })) }}><t.icon size={17}/>{t.label}</button>)}</div>
-      <div id="tool-panel" role="tabpanel" className="tool-panel">{!ready || !state.ready || toolLoading ? <Loading/> : !selected.length ? <Empty title="Choose a lesson to begin.">Select your materials in the sidebar, or <Link to="/library">add a new file</Link>.</Empty> : state.conflict ? <Empty title="This workspace changed on another device.">Use “Load latest” above to continue with the newer saved progress.</Empty> : tab === 'chat' ? <ChatPanel onState={setCompanionState} key={`${selected.join(',')}:${chatId || 'new'}`} selected={selected} chatId={chatId} onChat={(id: number) => { state.change(v => ({ ...v, chat_id: id })); void loadLists() }} onUpdate={loadLists}/> : <StudyPanel onState={setCompanionState} key={`${tab}:${selected.join(',')}:${saved?.id || studyId || 'new'}`} kind={tab} selected={selected} initial={saved} onGenerated={(s) => { setSaved(s.id ? s : null); state.change(v => ({ ...v, study_set_id: s.id, attempt_id: null })) }} requestedAttempt={state.value.attempt_id} onAttempt={(id) => state.change(v => ({ ...v, attempt_id: id }))} onUpdate={loadLists}/>}</div>
+      <div className="tool-tabs" inert={fileMutating} role="tablist" aria-label="Study tools">{tools.map(t => <button role="tab" aria-selected={tab === t.id} aria-controls="tool-panel" disabled={!state.ready || state.conflict || fileMutating || !!resourceError} key={t.id} onClick={() => { if (tab === t.id) return; setSaved(null); state.change(v => ({ ...v, tab: t.id, study_set_id: null, attempt_id: null })) }}><t.icon size={17}/>{t.label}</button>)}</div>
+      <div id="tool-panel" inert={fileMutating} role="tabpanel" className="tool-panel">{!ready || !state.ready || toolLoading ? <Loading/> : resourceError ? <Empty title="Refresh your workspace"><span>{resourceError}</span><button type="button" className="secondary" onClick={() => { void refreshAfterDelete() }}>Retry workspace refresh</button></Empty> : !selected.length ? <Empty title="Choose a lesson to begin.">Select your materials in the sidebar, or <Link to="/library">add a new file</Link>.</Empty> : state.conflict ? <Empty title="This workspace changed on another device.">Use “Load latest” above to continue with the newer saved progress.</Empty> : tab === 'chat' ? <ChatPanel onOperationStart={trackOperation} onBusyChange={setTaskBusy} onState={setCompanionState} key={`${selected.join(',')}:${chatId || 'new'}`} selected={selected} chatId={chatId} onChat={(id: number) => { state.change(v => ({ ...v, chat_id: id })); void loadLists() }} onUpdate={loadLists}/> : <StudyPanel onOperationStart={trackOperation} onBusyChange={setTaskBusy} onAssessmentState={reportAssessment} onState={setCompanionState} key={`${tab}:${selected.join(',')}:${saved?.id || studyId || 'new'}`} kind={tab} selected={selected} initial={saved} onGenerated={(s) => { setSaved(s.id ? s : null); state.change(v => ({ ...v, study_set_id: s.id, attempt_id: null })) }} requestedAttempt={state.value.attempt_id} onAttempt={(id) => state.change(v => ({ ...v, attempt_id: id }))} onUpdate={loadLists}/>}</div>
       {tab !== 'test' && <Companion state={companionState} enabled={profile?.companion !== false} avatar={profile?.avatar} compact onHide={() => { void updateProfile({ companion: false }).catch((e: any) => notify(e.message)) }}/>}<p className="ai-note"><Sparkles size={13}/> AI can make mistakes. Verify important information with your lesson.</p>
     </main></div></>
 }
 
-function ChatPanel({ selected, chatId, onChat, onUpdate, onState }: any) {
+function ChatPanel({ selected, chatId, onChat, onUpdate, onState, onBusyChange, onOperationStart }: any) {
   const { notify } = useApp(), [messages, setMessages] = useState<any[]>([]), [question, setQuestion] = useState(''), [busy, setBusy] = useState(false), [loading, setLoading] = useState(!!chatId)
   const controller = useRef<AbortController | null>(null), end = useRef<HTMLDivElement>(null), currentId = useRef(chatId), alive = useRef(true)
   useEffect(() => { alive.current = true; if (chatId) api(`/chats/${chatId}`).then(d => setMessages(d.messages)).catch((e: any) => notify(e.message)).finally(() => setLoading(false)); return () => { alive.current = false; controller.current?.abort() } }, [])
   useEffect(() => { end.current?.scrollIntoView({ block: 'nearest' }) }, [messages])
+  useEffect(() => { onBusyChange?.(busy || loading) }, [busy, loading, onBusyChange])
+  useEffect(() => () => { onBusyChange?.(false) }, [onBusyChange])
   const send = async (text: string) => {
     if (busy || !text.trim()) return
+    const finish = onOperationStart?.()
     setQuestion(''); setBusy(true); onState('processing'); controller.current = new AbortController()
     setMessages(old => [...old, { role: 'user', content: text }, { role: 'assistant', content: '', sources: [], status: 'streaming' }])
     let newId: number | null = null
@@ -211,22 +271,24 @@ function ChatPanel({ selected, chatId, onChat, onUpdate, onState }: any) {
           ...(kind === 'sources' ? { sources: data } : kind === 'token' ? { content: m.content + data } : { status: data.status }) } : m))
       })
     } catch (e: any) { if (e.name !== 'AbortError') { completedState = 'error'; notify(e.message, () => { setQuestion(text) }) }; setMessages(old => old.map((m, i) => i === old.length - 1 ? { ...m, status: 'interrupted' } : m)) }
-    finally { if (alive.current) { setBusy(false); onState(completedState); if (newId && newId !== chatId) onChat(newId); else void onUpdate() } }
+    finally { finish?.(); if (alive.current) { setBusy(false); onState(completedState); if (newId && newId !== chatId) onChat(newId); else void onUpdate() } }
   }
   if (loading) return <Loading label="Opening your conversation…"/>
   return <div className="chat-panel"><div className="chat-scroll">{!messages.length ? <div className="chat-welcome"><span className="chat-emblem"><Sparkles size={30}/></span><h2>Let’s make it click.</h2><p>Ask about a tricky concept, connect two ideas,<br/>or get a simpler explanation of your lesson.</p><div className="suggestions">{['What are the key ideas in this lesson?', 'Explain the main concept simply.', 'How do the key ideas connect?'].map(q => <button key={q} onClick={() => send(q)}>{q}<ArrowUpRight size={16}/></button>)}</div></div> : messages.map((m, i) => <motion.article initial={{ opacity: 0, y: 5 }} animate={{ opacity: 1, y: 0 }} className={'message ' + m.role} key={i}><div className="message-label">{m.role === 'user' ? 'You' : <><Sparkles size={15}/> ASKLearn</>}</div>{m.content ? <Markdown text={m.content}/> : busy ? <span className="thinking" role="status">Reading your materials<span>…</span></span> : <p className="muted">No answer received. Try your question again.</p>}{m.role === 'assistant' && <><Sources sources={m.sources}/>{m.content && <button className="text-button fine" onClick={() => navigator.clipboard.writeText(m.content).then(() => notify('Answer copied.')).catch(() => notify('Copy is unavailable in this browser.'))}><Copy size={13}/> Copy answer</button>}{m.status && !['complete', 'streaming'].includes(m.status) && <p className="form-error fine">{m.status === 'error' ? 'This answer needs checking.' : 'Response stopped before completion.'}</p>}</>}</motion.article>)}<div ref={end}/></div>
     <form className="composer" onSubmit={e => { e.preventDefault(); void send(question) }}><textarea aria-label="Ask a question about your lesson" placeholder="What would you like to understand?" value={question} maxLength={4000} onChange={e => setQuestion(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(question) } }}/>{busy ? <IconButton label="Stop generating" onClick={() => controller.current?.abort()} type="button"><Square size={19}/></IconButton> : <button className="send-button" aria-label="Send question" disabled={!question.trim()}><Send size={19}/></button>}</form><p className="composer-note">Answers use your selected materials. Follow a source chip to check the passage.</p></div>
 }
 
-function StudyPanel({ kind, selected, initial, onUpdate, onGenerated, requestedAttempt, onAttempt, onState }: any) {
+function StudyPanel({ kind, selected, initial, onUpdate, onGenerated, requestedAttempt, onAttempt, onState, onBusyChange, onAssessmentState, onOperationStart }: any) {
   const { notify } = useApp(), [study, setStudy] = useState<any>(initial), [busy, setBusy] = useState(false)
   const alive = useRef(true)
+  useEffect(() => { onBusyChange?.(busy) }, [busy, onBusyChange])
+  useEffect(() => () => { onBusyChange?.(false) }, [onBusyChange])
   useEffect(() => { alive.current = true; return () => { alive.current = false } }, [])
   const [n, setN] = useState(kind === 'test' ? 20 : 10), [difficulty, setDifficulty] = useState('medium'), [style, setStyle] = useState('concise')
   const [types, setTypes] = useState(['mcq', 'true_false', 'identification']), [minutes, setMinutes] = useState(30)
   const info = tools.find(t => t.id === kind)!
   const descriptions: Record<string, string> = { summary: 'Find the thread running through your lesson.', reviewer: 'The important ideas, organized for your next study session.', flashcards: 'A little active recall goes a long way.', quiz: 'Find out what clicks, and what needs another look.', test: 'Give yourself a focused rehearsal. Answers stay hidden until you finish.' }
-  const generate = async () => { setBusy(true); onState('processing'); try { const s = await api('/generate', { method: 'POST', body: JSON.stringify({ kind, document_ids: selected, n, difficulty, style, types }) }); if (!alive.current) return; setStudy(s); onState('ready'); onGenerated(s); void onUpdate() } catch (e: any) { if (alive.current) { onState('error'); notify(e.message, generate) } } finally { if (alive.current) setBusy(false) } }
+  const generate = async () => { const finish = onOperationStart?.(); setBusy(true); onState('processing'); try { const s = await api('/generate', { method: 'POST', body: JSON.stringify({ kind, document_ids: selected, n, difficulty, style, types }) }); if (!alive.current) return; setStudy(s); onState('ready'); onGenerated(s); void onUpdate() } catch (e: any) { if (alive.current) { onState('error'); notify(e.message, generate) } } finally { finish?.(); if (alive.current) setBusy(false) } }
   const exportText = () => {
     const c = study.content
     const references = '\n\n## Sources\n\n' + c.sources.map(s => `- [${s.id}] ${s.file}, location ${s.page}: ${s.excerpt}`).join('\n') + (c.sampled ? '\n\nCoverage note: sampled passages from longer materials.' : '')
@@ -238,7 +300,7 @@ function StudyPanel({ kind, selected, initial, onUpdate, onGenerated, requestedA
     </div>{kind === 'quiz' && <fieldset><legend>Question types</legend>{[['mcq', 'Multiple choice'], ['true_false', 'True / false'], ['identification', 'Identification']].map(([id, label]) => <label className="inline-check" key={id}><input type="checkbox" checked={types.includes(id)} onChange={e => setTypes(e.target.checked ? [...types, id] : types.filter(t => t !== id))}/>{label}</label>)}</fieldset>}
     <button className="primary" onClick={generate} disabled={!types.length || n < (kind === 'test' ? 20 : 3) || n > 40 || minutes < 5 || minutes > 120}><Sparkles size={18}/> Generate {info.label.toLowerCase()}</button><p className="fine muted">Created from your selected materials. Longer lessons may use sampled passages.</p></div>}
     {busy && <Loading phase="generating" label={`Creating your ${info.label.toLowerCase()}… This can take a minute.`}/>}
-    {study && <>{['summary', 'reviewer'].includes(kind) ? <div className="reading-result"><div className="result-actions"><button className="secondary" onClick={() => navigator.clipboard.writeText(exportText()).then(() => notify('Copied to clipboard.')).catch(() => notify('Copy is unavailable. Use Download instead.'))}><Copy size={16}/> Copy</button><button className="secondary" onClick={() => download(`asklearn-${kind}.md`, exportText())}><Download size={16}/> Download Markdown</button></div><h2>{study.content.title}</h2>{kind === 'summary' ? <><Markdown text={study.content.summary}/><h3>Key ideas</h3><ul>{study.content.key_points.map((p, i) => <li key={i}>{p}</li>)}</ul></> : <>{study.content.sections.map((s, i) => <section key={i}><h3>{s.heading}</h3><ul>{s.points.map((p, j) => <li key={j}>{p}</li>)}</ul><Sources sources={study.content.sources} ids={s.source_ids}/></section>)}<h3>Key terms</h3><dl>{study.content.key_terms.map((t, i) => <div key={i}><dt>{t.term}</dt><dd>{t.definition}</dd></div>)}</dl></>}<Sources sources={study.content.sources} ids={study.content.source_ids}/>{study.content.sampled && <p className="fine muted">This tool uses sampled passages from a longer lesson, so coverage is partial.</p>}</div> : kind === 'flashcards' ? <Flashcards content={study.content} studyId={study.id} onState={onState}/> : <Assessment onState={onState} study={study} minutes={minutes} onUpdate={onUpdate} requestedAttempt={requestedAttempt} onAttempt={onAttempt} Sources={Sources} Modal={Modal}/>}
+    {study && <>{['summary', 'reviewer'].includes(kind) ? <div className="reading-result"><div className="result-actions"><button className="secondary" onClick={() => navigator.clipboard.writeText(exportText()).then(() => notify('Copied to clipboard.')).catch(() => notify('Copy is unavailable. Use Download instead.'))}><Copy size={16}/> Copy</button><button className="secondary" onClick={() => download(`asklearn-${kind}.md`, exportText())}><Download size={16}/> Download Markdown</button></div><h2>{study.content.title}</h2>{kind === 'summary' ? <><Markdown text={study.content.summary}/><h3>Key ideas</h3><ul>{study.content.key_points.map((p, i) => <li key={i}>{p}</li>)}</ul></> : <>{study.content.sections.map((s, i) => <section key={i}><h3>{s.heading}</h3><ul>{s.points.map((p, j) => <li key={j}>{p}</li>)}</ul><Sources sources={study.content.sources} ids={s.source_ids}/></section>)}<h3>Key terms</h3><dl>{study.content.key_terms.map((t, i) => <div key={i}><dt>{t.term}</dt><dd>{t.definition}</dd></div>)}</dl></>}<Sources sources={study.content.sources} ids={study.content.source_ids}/>{study.content.sampled && <p className="fine muted">This tool uses sampled passages from a longer lesson, so coverage is partial.</p>}</div> : kind === 'flashcards' ? <Flashcards content={study.content} studyId={study.id} onState={onState}/> : <Assessment onOperationStart={onOperationStart} onAssessmentState={onAssessmentState} onState={onState} study={study} minutes={minutes} onUpdate={onUpdate} requestedAttempt={requestedAttempt} onAttempt={onAttempt} Sources={Sources} Modal={Modal}/>}
     <button className="text-button regenerate" onClick={() => { setStudy(null); onGenerated({ id: null }) }}><RotateCcw size={15}/> Create another {info.label.toLowerCase()}</button></>}
   </div>
 }
